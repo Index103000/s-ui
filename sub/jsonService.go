@@ -1,7 +1,6 @@
 package sub
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -155,7 +154,7 @@ func (j *JsonService) getOutbounds(clientConfig json.RawMessage, inbounds []*mod
 					continue
 				}
 				if key == "flow" {
-					if inData.TlsId == 0 || bytes.Contains(inData.Options, []byte(`"transport"`)) {
+					if shouldSkipVlessFlow(inData) {
 						continue
 					}
 				}
@@ -216,6 +215,63 @@ func (j *JsonService) getOutbounds(clientConfig json.RawMessage, inbounds []*mod
 		}
 	}
 	return &outbounds, &outTags, nil
+}
+
+// shouldSkipVlessFlow decides whether the VLESS flow field should be omitted
+// when generating subscription outbounds.
+//
+// VLESS Vision flow is only valid for TLS/Reality over TCP-like transport.
+// The old implementation checked whether inbound options contained the string
+// `"transport"`, which also matched an empty object such as:
+//
+//	"transport": {}
+//
+// That caused valid Reality + TCP + Vision nodes to lose:
+//
+//	flow: xtls-rprx-vision
+//
+// in Clash/Mihomo subscriptions.
+//
+// Therefore we only skip flow when:
+//  1. the inbound has no TLS configuration; or
+//  2. the inbound explicitly uses a non-TCP transport, such as ws/grpc/http.
+//
+// Empty transport, missing transport, tcp, and raw are treated as TCP-like.
+func shouldSkipVlessFlow(inData *model.Inbound) bool {
+	if inData == nil {
+		return true
+	}
+
+	// Flow requires TLS/Reality context.
+	if inData.TlsId == 0 {
+		return true
+	}
+
+	var options map[string]interface{}
+	if err := json.Unmarshal(inData.Options, &options); err != nil {
+		// Keep the previous behavior conservative but avoid dropping flow
+		// just because options cannot be parsed.
+		return false
+	}
+
+	transportRaw, ok := options["transport"]
+	if !ok || transportRaw == nil {
+		return false
+	}
+
+	transport, ok := transportRaw.(map[string]interface{})
+	if !ok || len(transport) == 0 {
+		return false
+	}
+
+	transportType, _ := transport["type"].(string)
+
+	switch strings.ToLower(transportType) {
+	case "", "tcp", "raw":
+		return false
+	default:
+		return true
+	}
 }
 
 func (j *JsonService) addDefaultOutbounds(outbounds *[]map[string]interface{}, outTags *[]string) {
