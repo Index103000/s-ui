@@ -11,7 +11,7 @@ ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-D_LARGEFILE64_SOURCE"
 ENV GOARCH=$TARGETARCH
 
-RUN apk upgrade --no-cache --scripts=no apk-tools && \
+RUN apk upgrade --no-cache --no-scripts apk-tools && \
     apk add --no-cache \
     gcc \
     musl-dev \
