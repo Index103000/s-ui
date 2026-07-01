@@ -393,10 +393,31 @@ func vlessLink(
 
 	uuid, _ := userConfig["uuid"].(string)
 	baseParams := getTransportParams(inbound["transport"])
-	isTcp := false
-	if len(baseParams) == 1 && baseParams[0].Value == "tcp" {
-		isTcp = true
-	}
+
+	//isTcp := false
+	//if len(baseParams) == 1 && baseParams[0].Value == "tcp" {
+	//	isTcp = true
+	//}
+
+	// getTransportParams 负责把 transport 转换成 vless:// 链接参数，
+	// 例如：
+	//   type=tcp
+	//   type=ws&path=/xxx&host=example.com
+	//   type=grpc&serviceName=xxx
+	//
+	// 注意：
+	//   为了让 vless:// 链接和 JSON / Clash 订阅使用同一套 TCP 判断规则，
+	//   这里不再通过 baseParams 的长度和值反推是否 TCP，
+	//   而是直接复用 util.IsTCPTransport。
+	//
+	// xtls-rprx-vision 只允许在 VLESS + TCP + TLS/REALITY 场景使用。
+	// 这里先判断 transport 是否应视为 TCP。
+	// flow 是否可保留，统一通过 IsTCPTransport 判断 transport 是否 TCP。
+	// transport:{} 或 transport.type 为空时，应按 TCP 处理；
+	// ws / grpc / http / httpupgrade 等明确非 TCP transport，则不能携带 flow。
+	// TLS / REALITY 是否启用，会在下面遍历 addr 时判断。
+	isTcp := IsTCPTransport(inbound["transport"])
+
 	var links []string
 
 	for _, addr := range addrs {

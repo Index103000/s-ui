@@ -1,7 +1,6 @@
 package sub
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -107,6 +106,65 @@ func (j *JsonService) getData(subId string) (*model.Client, []*model.Inbound, er
 	return client, inbounds, nil
 }
 
+// shouldKeepVLESSVisionFlow 判断当前 inbound 在生成 JSON / Clash 订阅出站时，
+// 是否应该保留 VLESS 的 xtls-rprx-vision flow。
+//
+// 背景说明：
+//  1. Clash 订阅中的 proxies 数据来自 JsonService.getOutbounds；
+//  2. 如果这里提前把 flow 删除，后面的 ClashService 即使支持输出 flow，也拿不到 flow；
+//  3. 旧逻辑使用 bytes.Contains(inData.Options, []byte(`"transport"`)) 判断是否删除 flow；
+//  4. 这种判断会把 transport:{} 误判为非 TCP，导致 Reality Vision 节点缺少 flow；
+//  5. 正确逻辑应该参考 s-ui-x：只有 transport.type 明确不是 tcp 时，才剥离 flow。
+//
+// 保留 flow 的条件：
+//  1. 协议必须是 vless；
+//  2. inbound 必须启用 TLS / REALITY，即 inData.TlsId > 0；
+//  3. transport 必须是 TCP，或者未显式配置 transport，或者 transport:{}。
+//
+// 删除 flow 的条件：
+//  1. 非 vless 协议；
+//  2. 没有 TLS / REALITY；
+//  3. transport.type 明确是 ws / grpc / http / httpupgrade 等非 TCP 类型；
+//  4. Options JSON 解析失败，为避免生成非法配置，保守删除 flow。
+//
+// s-ui-x 的修复思路是（https://github.com/deposist/s-ui-x/commit/d3452529165ed035f1116513f9a07abda72ac73a)：
+// - transport 不存在或 type 为空：不剥离 flow；
+// - transport.type 明确存在且不是 tcp：剥离 flow；
+// - 无 TLS：剥离 flow。
+func shouldKeepVLESSVisionFlow(protocol string, inData *model.Inbound) bool {
+	if protocol != "vless" || inData == nil {
+		return false
+	}
+
+	// xtls-rprx-vision 必须配合 TLS / REALITY 使用。
+	// 没有 TLS 的 VLESS 不应该携带 flow。
+	if inData.TlsId == 0 {
+		return false
+	}
+
+	var options map[string]interface{}
+	if err := json.Unmarshal(inData.Options, &options); err != nil {
+		// Options 解析失败时保守处理：不保留 flow。
+		// 这样可以避免生成一个可能被客户端或 Xray-core 拒绝的订阅配置。
+		return false
+	}
+
+	// 关键点：
+	//   不要再通过 “是否存在 transport 字符串” 判断是否删除 flow。
+	//
+	// 原因：
+	//   transport:{} 是前端 / 默认配置中很常见的空对象，
+	//   它并不代表 WebSocket / gRPC / HTTPUpgrade 等非 TCP 传输。
+	//
+	// util.IsTCPTransport 的规则和 s-ui-x 修复思路保持一致：
+	//   - transport 不存在：TCP
+	//   - transport:{}：TCP
+	//   - transport.type 为空：TCP
+	//   - transport.type == tcp：TCP
+	//   - transport.type == ws/grpc/http/httpupgrade：非 TCP
+	return util.IsTCPTransport(options["transport"])
+}
+
 func (j *JsonService) getOutbounds(clientConfig json.RawMessage, inbounds []*model.Inbound) (*[]map[string]interface{}, *[]string, error) {
 	var outbounds []map[string]interface{}
 	var configs map[string]interface{}
@@ -155,7 +213,28 @@ func (j *JsonService) getOutbounds(clientConfig json.RawMessage, inbounds []*mod
 					continue
 				}
 				if key == "flow" {
-					if inData.TlsId == 0 || bytes.Contains(inData.Options, []byte(`"transport"`)) {
+					//if inData.TlsId == 0 || bytes.Contains(inData.Options, []byte(`"transport"`)) {
+					//	continue
+					//}
+
+					// VLESS flow 不能简单根据 Options 中是否出现 "transport" 字符串来删除。
+					//
+					// 旧逻辑问题：
+					//   if inData.TlsId == 0 || bytes.Contains(inData.Options, []byte(`"transport"`)) {
+					//       continue
+					//   }
+					//
+					// 这会把 transport:{} 这种默认空对象误判为非 TCP，
+					// 导致 Clash / JSON 订阅缺少：
+					//
+					//   flow: xtls-rprx-vision
+					//
+					// 新逻辑参考 s-ui-x（https://github.com/deposist/s-ui-x/commit/d3452529165ed035f1116513f9a07abda72ac73a)）：
+					//   - VLESS + TLS/REALITY + TCP：保留 flow；
+					//   - VLESS + TLS/REALITY + transport:{}：保留 flow；
+					//   - VLESS + ws/grpc/http/httpupgrade：删除 flow；
+					//   - VLESS + 无 TLS：删除 flow。
+					if !shouldKeepVLESSVisionFlow(protocol, inData) {
 						continue
 					}
 				}
