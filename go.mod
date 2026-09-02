@@ -25,6 +25,19 @@ require (
 	gorm.io/gorm v1.31.2
 )
 
+// 使用 Index103000/sing 中基于官方 v0.9.0-beta.4 制作的 HTTP 代理认证修复版本。
+//
+// 修复内容：
+//   1. 先将完整的 HTTP 407 Proxy Authentication Required 响应
+//      序列化到内存缓冲区。
+//   2. 再将完整响应写入客户端 TCP 连接。
+//   3. 检查实际写入字节数，识别网络短写。
+//   4. 避免 FFmpeg 只收到部分 407 响应头后直接遇到 EOF。
+//
+// 保留原始 import 路径 github.com/sagernet/sing，
+// 仅在当前 S-UI 主模块构建时将源码替换为自己的 fork。
+replace github.com/sagernet/sing => github.com/Index103000/sing v0.9.0-beta.4.proxyauth.1
+
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/RyuaNerin/go-krypto v1.3.0 // indirect
